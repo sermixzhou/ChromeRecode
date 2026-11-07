@@ -3,6 +3,29 @@
 const DEFAULT_STATE = { phase: 'idle', mode: null, startedAt: 0, pausedAt: 0, pausedTotal: 0, tabTitle: '' };
 let busy = false;
 let makingOffscreen;
+// Hide Bilibili's thin progress layer during capture independently of the normal
+// fullscreen controls. Restore the exact stylesheet afterwards; never crop.
+const CAPTURE_OVERLAY_CSS = '.bpx-player-shadow-progress-area,.bpx-player-mini-progress{visibility:hidden!important;opacity:0!important}';
+async function restoreCaptureOverlay() {
+  const {captureOverlayTabId} = await chrome.storage.session.get('captureOverlayTabId');
+  if (!Number.isInteger(captureOverlayTabId)) return;
+  try { await chrome.scripting.removeCSS({target:{tabId:captureOverlayTabId}, css:CAPTURE_OVERLAY_CSS, origin:'USER'}); }
+  catch (error) { console.warn('录制页面样式恢复失败（页签可能已关闭）：', error); }
+  await chrome.storage.session.remove('captureOverlayTabId');
+}
+async function prepareCaptureOverlay(tabId, mode) {
+  if (mode !== 'video') return;
+  try {
+    const tab = await chrome.tabs.get(tabId), hostname = new URL(tab.url).hostname;
+    if (hostname !== 'bilibili.com' && !hostname.endsWith('.bilibili.com')) return;
+    await chrome.storage.session.set({captureOverlayTabId:tabId});
+    await chrome.scripting.insertCSS({target:{tabId}, css:CAPTURE_OVERLAY_CSS, origin:'USER'});
+  } catch (error) {
+    // Cosmetic cleanup must never prevent the actual recording from starting.
+    console.warn('录制页面底部进度层未隐藏：', error);
+    await restoreCaptureOverlay();
+  }
+}
 
 async function readState() {
   const value = await chrome.storage.session.get('recState');
@@ -28,12 +51,16 @@ async function ensureOffscreen() {
 async function start(tabId, tabTitle, mode) {
   if (busy) throw new Error('正在切换录制状态，请稍后重试。');
   busy = true;
+  let starting = false;
   try {
     const state = await readState();
     if (state.phase !== 'idle') throw new Error('已有录制任务，请先结束当前录制。');
     if (!Number.isInteger(tabId)) throw new Error('无法识别当前页签。');
     if (mode !== 'audio' && mode !== 'video') throw new Error('录制模式无效。');
+    starting = true;
     await saveState({...DEFAULT_STATE, phase:'starting', mode, tabTitle});
+    await restoreCaptureOverlay();
+    await prepareCaptureOverlay(tabId, mode);
     await ensureOffscreen();
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     const reply = await chrome.runtime.sendMessage({target:'offscreen', type:'START', streamId, mode, tabTitle});
@@ -41,7 +68,10 @@ async function start(tabId, tabTitle, mode) {
     await saveState({...DEFAULT_STATE, phase:'recording', mode, tabTitle, startedAt: Date.now()});
     return {ok:true};
   } catch (e) {
-    await saveState(DEFAULT_STATE);
+    if (starting) {
+      await restoreCaptureOverlay();
+      await saveState(DEFAULT_STATE);
+    }
     return {ok:false, error: e.message || String(e)};
   } finally { busy = false; }
 }
@@ -79,14 +109,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'OFFSCREEN_FINISHED' && sender.url?.includes('offscreen.html')) {
-    saveState(DEFAULT_STATE).then(async () => {
+    restoreCaptureOverlay().then(() => saveState(DEFAULT_STATE)).then(async () => {
       if (msg.id) await chrome.tabs.create({url: chrome.runtime.getURL('editor.html') + '?id=' + encodeURIComponent(msg.id)});
       sendResponse({ok:true});
     }).catch(e=>sendResponse({ok:false,error:String(e)}));
     return true;
   }
   if (msg.type === 'OFFSCREEN_ERROR' && sender.url?.includes('offscreen.html')) {
-    saveState(DEFAULT_STATE).then(()=>sendResponse({ok:true}));
+    restoreCaptureOverlay().then(() => saveState(DEFAULT_STATE)).then(()=>sendResponse({ok:true}));
     return true;
   }
 });

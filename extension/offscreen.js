@@ -8,6 +8,7 @@ let recordingStart = 0;
 let pauseStart = 0;
 let pausedMs = 0;
 let ending = false;
+let dimensionMonitor = null;
 
 function pickMime(mode) {
   const types = mode === 'audio'
@@ -17,6 +18,13 @@ function pickMime(mode) {
 }
 function send(type, payload={}) {return chrome.runtime.sendMessage({type,...payload});}
 function cleanUp() {
+  if (dimensionMonitor) {
+    dimensionMonitor.onresize=null;
+    dimensionMonitor.onloadedmetadata=null;
+    dimensionMonitor.pause();
+    dimensionMonitor.srcObject=null;
+    dimensionMonitor=null;
+  }
   sourceStream?.getTracks().forEach(t=>t.stop());
   sourceStream=null;
   playbackContext?.close().catch(()=>{});
@@ -51,11 +59,34 @@ async function start(message) {
   if(mediaRecorder) throw new Error('已有录音任务');
   const {streamId,mode,tabTitle} = message;
   const audio={mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:streamId}};
-  // Tab capture uses legacy constraints; do not mix in standard width/height constraints.
-  const video= mode==='video' ? {mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:streamId}} : false;
+  // Tab capture defaults to a fixed-size frame, which letterboxes other page ratios.
+  // Explicit, flexible bounds let Chrome follow the page through resize/fullscreen.
+  // Keep every constraint in the legacy mandatory object; mixing standard keys fails.
+  const video= mode==='video' ? {mandatory:{
+    chromeMediaSource:'tab',chromeMediaSourceId:streamId,
+    minWidth:2,minHeight:2,maxWidth:7680,maxHeight:4320,maxFrameRate:30
+  }} : false;
   sourceStream=await navigator.mediaDevices.getUserMedia({audio, video});
   const id=`rec-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
   activeSession={id,mode,title:tabTitle||'刻页录制',startedAt:Date.now(),status:'recording',mimeType:pickMime(mode)};
+  if (mode==='video') {
+    // Record dimension changes for the exporter: avc1 cannot represent them safely.
+    dimensionMonitor=document.createElement('video');
+    dimensionMonitor.muted=true;dimensionMonitor.playsInline=true;
+    const rememberSize=()=>{
+      const width=dimensionMonitor?.videoWidth,height=dimensionMonitor?.videoHeight;
+      if (!width || !height || !activeSession) return;
+      if (!activeSession.videoWidth) {
+        activeSession.videoWidth=width;activeSession.videoHeight=height;
+      } else if (width!==activeSession.videoWidth || height!==activeSession.videoHeight) {
+        activeSession.variableResolution=true;
+      }
+    };
+    dimensionMonitor.onloadedmetadata=rememberSize;
+    dimensionMonitor.onresize=rememberSize;
+    dimensionMonitor.srcObject=sourceStream;
+    await dimensionMonitor.play();rememberSize();
+  }
   recordingStart=Date.now();
   pendingWrites=Promise.resolve();
   chunkIndex=0;

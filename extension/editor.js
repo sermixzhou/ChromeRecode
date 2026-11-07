@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 let current = null, sourceBlob = null, sourceURL = null, clipBlob = null, clipFormat = '';
 let duration = 0, exporting = false, currentName = '刻页录制', previewMode = false;
+let compatibleVideoExport = false;
 let renderToken = 0, visualController = null, peaks = null, animationFrame = 0;
 let audioWaveFrame = 0, waveProgress = null;
 const reducedWaveMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -25,7 +26,12 @@ const videoMimeTypes = {
   mp4:['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1.424028,mp4a.40.2'],
   webm:['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
 };
-const videoMime = format => videoMimeTypes[format]?.find(type => MediaRecorder.isTypeSupported(type));
+const variableMp4MimeTypes = ['video/mp4;codecs=avc3,mp4a.40.2', 'video/mp4;codecs=avc3.424028,mp4a.40.2'];
+// avc3 carries H.264 configuration changes in the stream, including new dimensions.
+const videoMime = format => (format === 'mp4' && current?.variableResolution ? variableMp4MimeTypes : videoMimeTypes[format])?.find(type => MediaRecorder.isTypeSupported(type));
+const mp4UnavailableHint = () => current?.variableResolution
+  ? '此录制包含窗口或全屏尺寸变化，当前浏览器不支持对应的 MP4 编码，请更新 Chrome 或使用 WebM。'
+  : '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或使用 WebM。';
 const player = () => current?.mode === 'audio' ? $('audioPlayer') : $('player');
 const startTime = () => Number($('startRange').value);
 const endTime = () => Number($('endRange').value);
@@ -95,7 +101,7 @@ function updateExportHint() {
     : `${format === 'mp4' ? 'MP4 · H.264 / AAC' : 'WebM · VP8 / Opus'}。按原速编码，耗时约等于片段时长，请保持此页打开。`;
   $('cut').title = $('hint').textContent;
   $('exportFormat').title = current?.mode === 'video' && !videoMime('mp4')
-    ? '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或使用 WebM。'
+    ? mp4UnavailableHint()
     : $('hint').textContent;
 }
 function configureExportFormats() {
@@ -489,37 +495,79 @@ async function createWAV(blob, start, end) {
 // Re-encode video in real time, routing export audio away from the speakers.
 async function createVideoClip(url, start, end, format) {
   const mime = videoMime(format);
-  if (!mime) throw new Error(format === 'mp4' ? '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或选择 WebM。' : '浏览器不支持 WebM 导出');
+  if (!mime) throw new Error(format === 'mp4' ? mp4UnavailableHint() : '浏览器不支持 WebM 导出');
+  compatibleVideoExport = false;
+  try {
+    return await encodeVideoClip(url, start, end, mime, false);
+  } catch (error) {
+    if (format !== 'mp4' || error.name !== 'EncodingError') throw error;
+    // isTypeSupported checks the format, not the device's resolution limits.
+    // Retry from the selected start with a fresh encoder and even-sized frames.
+    console.warn('原尺寸 MP4 编码失败，正在尝试兼容模式：', error);
+    setProgress(0, '正在切换兼容编码');
+    status('正在使用兼容模式导出（最高 1080p）。');
+    const blob = await encodeVideoClip(url, start, end, mime, true);
+    compatibleVideoExport = true;
+    return blob;
+  }
+}
+function videoEncodingError(cause) {
+  const error = new Error(`视频编码失败${cause?.message ? `：${cause.message}` : '，请更新 Chrome 后重试'}`, {cause});
+  error.name = 'EncodingError';
+  return error;
+}
+async function encodeVideoClip(url, start, end, mime, compatible) {
   const media = document.createElement('video'); media.playsInline = true; media.preload = 'auto'; media.src = url;
   media.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;pointer-events:none'; document.body.append(media);
-  let stream, captured, recorder, audioCtx, timer; const chunks = [];
+  let stream, captured, recorder, audioCtx, timer, frameCallback; const chunks = [];
   try {
     if (media.readyState < 1) await waitForEvent(media, 'loadedmetadata');
     await seekMedia(media, start);
     audioCtx = new AudioContext();
     const source = audioCtx.createMediaElementSource(media), destination = audioCtx.createMediaStreamDestination();
     source.connect(destination); await audioCtx.resume();
-    captured = media.captureStream(); await media.play();
+    if (compatible) {
+      const canvas = document.createElement('canvas'), context = canvas.getContext('2d', {alpha:false});
+      if (!context) throw new Error('无法准备兼容编码画面');
+      const draw = () => {
+        const width = media.videoWidth, height = media.videoHeight;
+        const scale = Math.min(1, 1920 / Math.max(width, height), 1080 / Math.min(width, height));
+        const targetWidth = Math.max(2, Math.floor(width * scale / 2) * 2);
+        const targetHeight = Math.max(2, Math.floor(height * scale / 2) * 2);
+        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+          canvas.width = targetWidth; canvas.height = targetHeight;
+        }
+        // Fill the exact output dimensions: no letterbox, including on resize.
+        context.drawImage(media, 0, 0, canvas.width, canvas.height);
+      };
+      const nextFrame = () => { draw(); frameCallback = media.requestVideoFrameCallback(nextFrame); };
+      draw(); captured = canvas.captureStream(30);
+      frameCallback = media.requestVideoFrameCallback(nextFrame);
+    } else captured = media.captureStream();
+    await media.play();
     if (!captured.getVideoTracks().length) throw new Error('未获得视频轨道');
     stream = new MediaStream([...captured.getVideoTracks(), ...destination.stream.getAudioTracks()]);
-    recorder = new MediaRecorder(stream, {mimeType:mime, videoBitsPerSecond:3500000, audioBitsPerSecond:192000});
+    try { recorder = new MediaRecorder(stream, {mimeType:mime, videoBitsPerSecond:3500000, audioBitsPerSecond:192000}); }
+    catch (error) { throw videoEncodingError(error); }
     const done = new Promise((resolve, reject) => {
       recorder.ondataavailable = event => { if (event.data?.size) chunks.push(event.data); };
-      recorder.onerror = () => reject(new Error('视频编码失败'));
+      recorder.onerror = event => reject(videoEncodingError(event.error));
       recorder.onstop = resolve;
       const stop = () => { if (recorder.state !== 'inactive') recorder.stop(); media.pause(); };
       let lastTime = media.currentTime, lastAdvance = Date.now();
       timer = setInterval(() => {
-        setProgress((media.currentTime - start) / (end - start) * 99, '正在导出视频');
+        setProgress((media.currentTime - start) / (end - start) * 99, compatible ? '正在兼容导出 · 最高 1080p' : '正在导出视频');
         if (media.currentTime >= end - .025 || media.ended) return stop();
         if (media.currentTime !== lastTime) { lastTime = media.currentTime; lastAdvance = Date.now(); }
         if (media.error || Date.now() - lastAdvance > 20000) { reject(new Error('视频读取中断，请重试')); stop(); }
       }, 40);
+      try { recorder.start(300); } catch (error) { reject(videoEncodingError(error)); }
     });
-    recorder.start(300); await done;
+    await done;
     if (!chunks.length) throw new Error('导出的视频为空');
     return new Blob(chunks, {type:recorder.mimeType || mime});
   } finally {
+    if (frameCallback !== undefined) media.cancelVideoFrameCallback(frameCallback);
     clearInterval(timer); if (recorder && recorder.state !== 'inactive') recorder.stop();
     media.pause(); stream?.getTracks().forEach(track => track.stop()); captured?.getTracks().forEach(track => track.stop());
     await audioCtx?.close().catch(() => {}); media.removeAttribute('src'); media.load(); media.remove();
@@ -527,7 +575,7 @@ async function createVideoClip(url, start, end, format) {
 }
 async function cut() {
   if (exporting || !current) return;
-  exporting = true; clearClip(); updateControls(); player().pause(); previewMode = false;
+  exporting = true; compatibleVideoExport = false; clearClip(); updateControls(); player().pause(); previewMode = false;
   const [start, end] = bounds();
   const format = $('exportFormat').value;
   try {
@@ -541,7 +589,7 @@ async function cut() {
     clipFormat = format;
     setProgress(100, '导出完成');
     downloadClip();
-    status(`已开始下载 · ${(clipBlob.size / 1024 / 1024).toFixed(2)} MB`, false, 'success');
+    status(`已开始下载 · ${(clipBlob.size / 1024 / 1024).toFixed(2)} MB${compatibleVideoExport ? ' · 兼容模式（最高 1080p）' : ''}`, false, 'success');
     $('saveClip').hidden = false;
   } catch (error) { $('cut').dataset.state = 'error'; $('exportProgress').hidden = true; fail(error); }
   finally { exporting = false; updateControls(); }
