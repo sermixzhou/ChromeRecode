@@ -55,7 +55,7 @@ async function start(message) {
   const video= mode==='video' ? {mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:streamId}} : false;
   sourceStream=await navigator.mediaDevices.getUserMedia({audio, video});
   const id=`rec-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-  activeSession={id,mode,title:tabTitle||'网页录制',startedAt:Date.now(),status:'recording',mimeType:pickMime(mode)};
+  activeSession={id,mode,title:tabTitle||'刻页录制',startedAt:Date.now(),status:'recording',mimeType:pickMime(mode)};
   recordingStart=Date.now();
   pendingWrites=Promise.resolve();
   chunkIndex=0;

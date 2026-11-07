@@ -2,12 +2,12 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>轻剪 · 录音录像编辑器</title>
+  <title>刻页 · 录制工作台</title>
+  <link rel="icon" href="brand/mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css"><link rel="stylesheet" href="editor.css">
 </head>
 <body class="studio">
   <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
-    <symbol id="i-cut" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="m8.2 8.2 12 12M8.2 15.8 20 4"/></symbol>
     <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3Z"/></symbol>
     <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 5 11 7-11 7Z"/></symbol>
@@ -19,29 +19,28 @@
     <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
     <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4ZM17 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
-    <symbol id="i-mark-in" viewBox="0 0 24 24"><path d="M9 4H5v16h4m12-8H10m4-4-4 4 4 4"/></symbol>
-    <symbol id="i-mark-out" viewBox="0 0 24 24"><path d="M15 4h4v16h-4M3 12h11m-4-4 4 4-4 4"/></symbol>
+    <symbol id="i-mark-in" viewBox="0 0 24 24"><path d="M15 4H9v16h6"/></symbol>
+    <symbol id="i-mark-out" viewBox="0 0 24 24"><path d="M9 4h6v16H9"/></symbol>
     <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 2v5m0 10v5M2 12h5m10 0h5"/></symbol>
-    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V4h7l3 3h8v13H3Z"/></symbol>
   </defs></svg>
   <header class="studio-header">
-    <a class="studio-brand" href="editor.html" aria-label="轻剪首页"><span class="studio-logo"><svg class="icon"><use href="#i-cut"/></svg></span><strong>轻剪</strong><span class="brand-caption">录音录像编辑器</span></a>
-    <button id="cut" class="studio-button accent" aria-describedby="hint" disabled><svg class="icon"><use href="#i-download"/></svg><span id="exportLabel">导出片段</span></button>
+    <a class="studio-brand" href="editor.html" aria-label="刻页首页"><img class="studio-logo brand-mark" src="brand/mark.svg" alt="" width="32" height="26"><strong>刻页</strong><span class="brand-caption">录制工作台</span></a>
   </header>
   <div class="studio-layout">
     <aside class="library">
-      <div class="library-heading"><h2>我的录制 <span id="historyCount" class="count">0</span></h2><svg class="icon"><use href="#i-folder"/></svg></div>
+      <div class="library-heading"><h2>我的录制 <span id="historyCount" class="count">0</span></h2></div>
       <div id="history" class="recording-list"><p class="subtle">正在读取录制…</p></div>
     </aside>
     <main class="workspace">
-      <div id="empty" class="studio-empty"><div class="empty-symbol"><svg class="icon"><use href="#i-cut"/></svg></div><h1>选择一条录制</h1><p>从左侧选择文件，或通过浏览器扩展开始录制。</p></div>
+      <div id="empty" class="studio-empty"><div class="empty-symbol"><img class="brand-mark" src="brand/mark.svg" alt="" width="48" height="36"></div><h1>选择一条录制</h1><p>从左侧选择文件，或通过浏览器扩展开始录制。</p></div>
       <div id="workArea" hidden>
         <section class="preview-section">
           <div class="preview-heading"><div class="recording-title"><span id="modeBadge" class="mode-badge">视频</span><h1 id="fileTitle">网页录制</h1></div></div>
           <div id="mediaFrame" class="preview-stage">
             <video id="player" playsinline preload="auto"></video><audio id="audioPlayer" preload="auto" hidden></audio>
-            <div id="audioVisual" class="audio-visual" hidden><span class="audio-orbit"><svg class="icon"><use href="#i-audio"/></svg></span><h2 id="audioTitle">音频录制</h2><canvas id="audioWave" aria-label="音频波形预览"></canvas></div>
+            <div id="audioVisual" class="audio-visual" hidden><span class="audio-orbit"><img class="brand-mark" src="brand/mark.svg" alt="" width="30" height="24"></span><h2 id="audioTitle">音频录制</h2><canvas id="audioWave" aria-label="音频波形预览"></canvas></div>
             <span id="stageBadge" hidden>原始画面</span>
           </div>
           <div class="transport">
@@ -75,16 +74,16 @@
         </div>
         <div class="duration-card"><span>片段时长</span><strong id="selectionDuration">00:00.0</strong><div><span id="retainedBar"></span></div><small id="retainedText">选择录制后开始剪辑</small></div>
         <button id="preview" class="studio-button outline wide" title="从起点播放至终点" disabled><svg class="icon"><use href="#i-play"/></svg>预览片段</button>
-        <div class="export-details"><div class="section-eyebrow">导出信息</div><div class="export-info"><span>文件格式</span><strong id="formatText">—</strong></div><div class="export-info"><span>原始时长</span><strong id="originalDuration">—</strong></div><div class="export-info"><span>文件大小</span><strong id="fileSize">—</strong></div></div>
+        <div class="export-details"><div class="section-eyebrow">导出信息</div><label class="export-info" for="exportFormat"><span>文件格式</span><select id="exportFormat" aria-label="导出格式" disabled><option value="">—</option></select></label><div class="export-info"><span>原始时长</span><strong id="originalDuration">—</strong></div><div class="export-info"><span>文件大小</span><strong id="fileSize">—</strong></div></div>
         <p id="hint" hidden>视频导出 WebM，音频导出 WAV。所有处理都在本地完成。</p>
         <div id="exportProgress" class="export-progress" hidden><div><span id="progressLabel">正在导出</span><span id="progressPercent">0%</span></div><progress id="progressBar" max="100" value="0" aria-label="导出进度"></progress></div>
         <div id="status" class="studio-status" role="status" aria-live="polite"></div>
         <button id="saveClip" class="studio-button outline wide" hidden disabled><svg class="icon"><use href="#i-download"/></svg>再次下载片段</button>
-        <div class="source-actions"><button id="original" class="icon-button" title="下载原始录制" aria-label="下载原始录制" disabled><svg class="icon"><use href="#i-download"/></svg></button><button id="delete" class="icon-button delete-tool" title="删除这条录制" aria-label="删除这条录制" disabled><svg class="icon"><use href="#i-trash"/></svg></button></div>
+        <div class="source-actions"><button id="delete" class="studio-button outline source-action delete-tool" title="删除这条录制" aria-label="删除这条录制" disabled><svg class="icon"><use href="#i-trash"/></svg></button><button id="cut" class="studio-button accent source-action export-action" aria-describedby="hint" disabled><svg class="icon"><use href="#i-download"/></svg><span id="exportLabel">导出片段</span></button></div>
       </div>
     </aside>
   </div>
-  <footer hidden><span><span class="footer-dot"></span> 所有文件仅保存在当前浏览器</span><span id="fileMeta">简单一点，剪得刚好。</span></footer>
-  <script src="db.js"></script><script src="editor.js"></script>
+  <footer hidden><span><span class="footer-dot"></span> 所有文件仅保存在当前浏览器</span><span id="fileMeta">刻页 · 记录网页的声音与画面</span></footer>
+  <script src="ui.js"></script><script src="db.js"></script><script src="editor.js"></script>
 </body>
 </html>

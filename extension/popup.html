@@ -1,15 +1,33 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="style.css"><title>页签录音录像</title></head>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="style.css"><link rel="icon" href="brand/mark.svg" type="image/svg+xml">
+  <title>刻页 · 网页录制</title>
+</head>
 <body class="popup-page"><main class="popup">
-  <div class="brand"><div class="brand-mark">●</div><div><strong>页签录音录像</strong><small>录制 · 简单剪辑 · 下载</small></div></div>
-  <div id="tabTitle" class="tab-name">当前页签</div>
-  <div id="idlePanel"><p class="muted">选择要录制的内容</p>
-    <button id="recordVideo" class="button primary full">▣　开始录制视频 + 声音</button>
-    <button id="recordAudio" class="button secondary full">♫　仅录制声音</button>
-    <p class="tiny">仅录制当前网页页签，不录制其他应用。</p>
+  <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="p-video" viewBox="0 0 24 24"><rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3"/></symbol>
+    <symbol id="p-audio" viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4"/></symbol>
+    <symbol id="p-page" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8h18"/></symbol>
+    <symbol id="p-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="p-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+    <symbol id="p-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+    <symbol id="p-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+  </defs></svg>
+  <div class="brand"><img class="brand-mark" src="brand/mark.svg" alt="" width="36" height="28"><div><strong>刻页</strong><small>记录网页的声音与画面</small></div></div>
+  <div class="tab-name"><svg class="icon" aria-hidden="true"><use href="#p-page"/></svg><span id="tabTitle">当前页签</span></div>
+  <div id="idlePanel"><div class="record-status"><span class="state-dot"></span><span>待录制</span></div>
+    <button id="recordVideo" class="button primary full"><svg class="icon" aria-hidden="true"><use href="#p-video"/></svg>录制视频与声音</button>
+    <button id="recordAudio" class="button secondary full"><svg class="icon" aria-hidden="true"><use href="#p-audio"/></svg>仅录制声音</button>
+    <p class="tiny">仅录制当前网页，文件保存在本地。</p>
   </div>
-  <div id="activePanel" hidden><div class="record-dot">●　<span id="statusLabel">正在录制</span></div><div class="clock" id="clock">00:00</div>
-    <div class="button-row"><button id="pause" class="button secondary">暂停</button><button id="stop" class="button danger">■ 结束并编辑</button></div>
+  <div id="activePanel" hidden>
+    <div id="recordStatus" class="record-status recording" role="status"><span class="state-dot"></span><span id="statusLabel">正在录制</span></div>
+    <div class="clock" id="clock" role="timer">00:00</div>
+    <div class="button-row"><button id="pause" class="button secondary"><svg class="icon" aria-hidden="true"><use id="pauseIcon" href="#p-pause"/></svg><span id="pauseLabel">暂停</span></button><button id="stop" class="button danger"><svg class="icon" aria-hidden="true"><use href="#p-stop"/></svg>结束并编辑</button></div>
   </div>
   <p id="error" class="error" role="alert" hidden></p>
-  <div class="popup-footer"><button id="openEditor" class="link-button">打开录制历史与编辑器 →</button></div>
-</main><script src="popup.js"></script></body></html>
+  <div class="popup-footer"><button id="openEditor" class="link-button"><span>我的录制</span><svg class="icon" aria-hidden="true"><use href="#p-arrow"/></svg></button></div>
+</main><script src="ui.js"></script><script src="popup.js"></script></body>
+</html>

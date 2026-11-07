@@ -1,9 +1,31 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let current = null, sourceBlob = null, sourceURL = null, clipBlob = null;
-let duration = 0, exporting = false, currentName = '页签录制', previewMode = false;
+let current = null, sourceBlob = null, sourceURL = null, clipBlob = null, clipFormat = '';
+let duration = 0, exporting = false, currentName = '刻页录制', previewMode = false;
 let renderToken = 0, visualController = null, peaks = null, animationFrame = 0;
+let audioWaveFrame = 0, waveProgress = null;
+const reducedWaveMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let undoStack = [], redoStack = [], drag = null;
+let activePreview = null, previewWrites = Promise.resolve();
+const previewMemory = new Map();
+const previewSignature = (session, blob, chunks) => JSON.stringify([1, blob.size, session.mimeType, session.durationMs, session.completedAt || session.startedAt, chunks]);
+function rememberPreview(record) {
+  previewMemory.delete(record.id); previewMemory.set(record.id, record);
+  if (previewMemory.size > 8) previewMemory.delete(previewMemory.keys().next().value);
+}
+function savePreview(token, part) {
+  if (token !== renderToken || !activePreview) return;
+  const record = activePreview = {...activePreview, ...part};
+  rememberPreview(record);
+  // Serialize independent waveform / thumbnail writes so neither overwrites the other.
+  previewWrites = previewWrites.then(() => dbWrite('previews', record)).catch(error => console.warn('预览缓存保存失败:', error));
+}
+const preferredFormats = {video:'mp4', audio:'mp3'};
+const videoMimeTypes = {
+  mp4:['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1.424028,mp4a.40.2'],
+  webm:['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
+};
+const videoMime = format => videoMimeTypes[format]?.find(type => MediaRecorder.isTypeSupported(type));
 const player = () => current?.mode === 'audio' ? $('audioPlayer') : $('player');
 const startTime = () => Number($('startRange').value);
 const endTime = () => Number($('endRange').value);
@@ -26,9 +48,14 @@ function parseTime(text) {
   }
   return NaN;
 }
-function safeName(title) { return String(title || '页签录制').replace(/[\\/:*?"<>|\x00-\x1F]/g, '_').slice(0, 75).trim() || '页签录制'; }
-function status(text, error = false) {
-  $('status').textContent = text;
+function safeName(title) { return String(title || '刻页录制').replace(/[\\/:*?"<>|\x00-\x1F]/g, '_').slice(0, 75).trim() || '刻页录制'; }
+function status(text, error = false, state = 'info') {
+  const element = $('status'); element.replaceChildren();
+  element.dataset.state = text ? (error ? 'error' : state) : 'idle';
+  if (text) {
+    if (error || state === 'success') element.append(icon(error ? 'alert' : 'check'));
+    const message = document.createElement('span'); message.textContent = text; element.append(message);
+  }
   $('status').classList.toggle('error', error);
 }
 function fail(error) { status(`操作失败：${error.message || error}`, true); }
@@ -46,19 +73,46 @@ function remember(before) {
   redoStack = []; updateBounds();
 }
 function clearClip() {
-  clipBlob = null; $('saveClip').disabled = true; $('saveClip').hidden = true;
+  clipBlob = null; clipFormat = ''; $('saveClip').disabled = true; $('saveClip').hidden = true;
+  $('cut').dataset.state = 'idle';
   $('exportProgress').hidden = true; status('');
 }
 function updateControls() {
   const unavailable = !current || exporting;
-  for (const id of ['cut', 'preview', 'original', 'delete', 'startInput', 'endInput', 'startAtPlayhead', 'endAtPlayhead', 'markStart', 'markEnd', 'reset', 'playPause', 'jumpStart', 'jumpEnd', 'speed', 'volume', 'startHandle', 'endHandle']) $(id).disabled = unavailable;
+  for (const id of ['cut', 'preview', 'delete', 'startInput', 'endInput', 'startAtPlayhead', 'endAtPlayhead', 'markStart', 'markEnd', 'reset', 'playPause', 'jumpStart', 'jumpEnd', 'speed', 'volume', 'startHandle', 'endHandle', 'exportFormat']) $(id).disabled = unavailable;
   $('cut').disabled = unavailable || endTime() - startTime() < minClip() - .011 || !!document.querySelector('.time-input-wrap input[aria-invalid="true"]');
   $('undo').disabled = unavailable || !undoStack.length;
   $('redo').disabled = unavailable || !redoStack.length;
   $('saveClip').disabled = unavailable || !clipBlob;
   document.querySelectorAll('.recording-item').forEach(button => { button.disabled = exporting; });
   document.body.classList.toggle('exporting', exporting);
-  $('exportLabel').textContent = exporting ? '正在导出…' : '导出片段';
+  $('exportLabel').textContent = exporting ? '正在导出…' : $('cut').dataset.state === 'error' ? '重试导出' : '导出片段';
+}
+function updateExportHint() {
+  const format = $('exportFormat').value;
+  $('hint').textContent = current?.mode === 'audio'
+    ? (format === 'mp3' ? 'MP3 · 192 kbps，本地编码。预览音量与倍速不影响导出。' : 'WAV · PCM 音频。预览音量与倍速不影响导出。')
+    : `${format === 'mp4' ? 'MP4 · H.264 / AAC' : 'WebM · VP8 / Opus'}。按原速编码，耗时约等于片段时长，请保持此页打开。`;
+  $('cut').title = $('hint').textContent;
+  $('exportFormat').title = current?.mode === 'video' && !videoMime('mp4')
+    ? '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或使用 WebM。'
+    : $('hint').textContent;
+}
+function configureExportFormats() {
+  const select = $('exportFormat'); select.replaceChildren();
+  const formats = current.mode === 'audio' ? ['mp3', 'wav'] : ['mp4', 'webm'];
+  for (const format of formats) {
+    const option = document.createElement('option'); option.value = format; option.textContent = format === 'webm' ? 'WebM' : format.toUpperCase();
+    option.disabled = current.mode === 'video' && !videoMime(format);
+    if (option.disabled) option.textContent += '（不可用）';
+    select.append(option);
+  }
+  select.value = [...select.options].find(option => option.value === preferredFormats[current.mode] && !option.disabled)?.value
+    || [...select.options].find(option => !option.disabled)?.value || '';
+  updateExportHint();
+}
+function downloadClip() {
+  if (clipBlob && clipFormat) download(clipBlob, `${currentName}-剪辑.${clipFormat}`);
 }
 function updateBounds() {
   if (!current) return updateControls();
@@ -118,7 +172,7 @@ function updatePlayback() {
   $('playPause').setAttribute('aria-label', playing ? '暂停' : '播放');
   $('playIcon').setAttribute('href', playing ? '#i-pause' : '#i-play');
   document.body.classList.toggle('is-playing', playing);
-  if (current.mode === 'audio') drawWave($('audioWave'), true);
+  if (current.mode === 'audio') requestAudioWave();
   if (previewMode && time >= endTime() - .02) { previewMode = false; media.pause(); }
 }
 function animatePlayback() {
@@ -154,14 +208,13 @@ async function loadHistory(selected = current?.id) {
     const button = document.createElement('button');
     button.className = `recording-item${session.id === selected ? ' active' : ''}`;
     button.disabled = exporting; button.setAttribute('aria-pressed', String(session.id === selected));
-    const top = document.createElement('div'); top.className = 'recording-item-top';
-    const type = document.createElement('span'); type.className = 'recording-type';
-    type.append(icon(session.mode), session.mode === 'video' ? '视频录制' : '音频录制');
-    const length = document.createElement('span'); length.className = 'recording-item-duration'; length.textContent = fmt(session.durationMs / 1000);
-    top.append(type, length);
-    const name = document.createElement('strong'); name.textContent = session.title || '网页录制'; button.title = name.textContent;
-    const date = document.createElement('small'); date.textContent = new Date(session.startedAt).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
-    button.append(top, name, date);
+    const glyph = document.createElement('span'); glyph.className = `recording-glyph ${session.mode}`; glyph.append(icon(session.mode));
+    const copy = document.createElement('span'); copy.className = 'recording-copy';
+    const name = document.createElement('strong'); name.textContent = session.title || '刻页录制'; button.title = name.textContent;
+    const detail = document.createElement('span'); detail.className = 'recording-detail';
+    detail.textContent = `${session.mode === 'video' ? '视频' : '音频'} · ${fmt(session.durationMs / 1000)}`;
+    const date = document.createElement('small'); date.className = 'recording-date'; date.textContent = new Date(session.startedAt).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
+    copy.append(name, detail, date); button.append(glyph, copy);
     if (session.id === selected) { const check = icon('check'); check.classList.add('recording-selected'); button.append(check); }
     button.addEventListener('click', () => loadSession(session.id).catch(fail)); holder.append(button);
   }
@@ -178,32 +231,37 @@ function setDuration(value) {
 async function loadSession(id) {
   if (exporting) return;
   const token = ++renderToken;
+  visualController?.abort();
   const session = await dbRead('sessions', id);
   if (token !== renderToken || exporting) return;
   if (!session || session.status !== 'ready') throw new Error('录制文件未找到');
-  const chunks = await dbChunks(id);
+  const [chunks, cached] = await Promise.all([dbChunks(id),
+    previewMemory.has(id) ? previewMemory.get(id) : dbRead('previews', id).catch(() => null)]);
   if (token !== renderToken || exporting) return;
   if (!chunks.length) throw new Error('该录制没有保存任何数据');
-  visualController?.abort(); visualController = new AbortController();
+  visualController = new AbortController();
   $('player').pause(); $('audioPlayer').pause(); cancelAnimationFrame(animationFrame);
+  resetAudioWave();
   for (const media of [$('player'), $('audioPlayer')]) { media.removeAttribute('src'); media.load(); }
   if (sourceURL) URL.revokeObjectURL(sourceURL);
   current = session; sourceBlob = new Blob(chunks.map(x => x.blob), {type:session.mimeType});
+  const signature = previewSignature(session, sourceBlob, chunks.length);
+  activePreview = cached?.signature === signature ? cached : {id, signature};
+  rememberPreview(activePreview);
   sourceURL = URL.createObjectURL(sourceBlob); currentName = safeName(session.title);
-  previewMode = false; peaks = null; undoStack = []; redoStack = [];
+  previewMode = false; peaks = activePreview.peaks || null; undoStack = []; redoStack = [];
   $('empty').hidden = true; $('workArea').hidden = false;
   const audio = session.mode === 'audio'; document.body.classList.toggle('audio-mode', audio);
   $('player').hidden = audio; $('audioPlayer').hidden = !audio; $('audioVisual').hidden = !audio;
   $('modeBadge').textContent = audio ? '音频' : '视频';
   $('stageBadge').textContent = audio ? '声音预览' : '原始画面';
-  $('fileTitle').textContent = session.title || '网页录制'; $('audioTitle').textContent = session.title || '音频录制';
-  $('formatText').textContent = audio ? 'WAV · PCM' : 'WebM · 视频';
+  $('fileTitle').textContent = session.title || '刻页录制'; $('audioTitle').textContent = session.title || '音频录制';
+  configureExportFormats();
   $('fileSize').textContent = `${(sourceBlob.size / 1024 / 1024).toFixed(2)} MB`;
   $('fileMeta').textContent = `${audio ? '音频' : '视频'}录制 · ${(sourceBlob.size / 1024 / 1024).toFixed(2)} MB`;
-  $('hint').textContent = audio ? '导出 WAV 音频。预览音量与倍速不影响导出文件。' : '导出 WebM 视频。裁剪时按原速重新编码，耗时约等于片段时长，请保持此页打开。';
-  $('cut').title = $('hint').textContent;
-  $('filmstrip').replaceChildren(); $('filmstripLabel').hidden = false; $('filmstripLabel').textContent = '正在读取画面…';
-  $('waveformLabel').hidden = false; $('waveformLabel').textContent = '正在分析声音…';
+  $('filmstrip').replaceChildren(); $('filmstrip').setAttribute('aria-busy', 'false');
+  $('filmstripLabel').hidden = false; $('filmstripLabel').textContent = '正在读取画面…';
+  $('waveformLabel').hidden = !!peaks; $('waveformLabel').textContent = '正在分析声音…';
   clearClip(); setDuration(Math.max(.01, (session.durationMs || 500) / 1000));
   const media = player();
   media.onloadedmetadata = () => {
@@ -211,17 +269,23 @@ async function loadSession(id) {
   };
   media.src = sourceURL; media.volume = Number($('volume').value); media.playbackRate = Number($('speed').value); media.load();
   updatePlayback(); drawWaves();
-  renderWaveform(sourceBlob, token);
-  if (!audio) renderFilmstrip(sourceURL, token, visualController.signal);
+  if (!peaks) renderWaveform(sourceBlob, token, visualController.signal);
+  if (!audio) {
+    if (activePreview.thumbnails?.length) showThumbnails(activePreview.thumbnails);
+    else renderFilmstrip(sourceURL, token, visualController.signal);
+  }
   await loadHistory(id);
 }
 // Read actual audio peaks once; canvas redraws do not decode the file again.
-async function renderWaveform(blob, token) {
+async function renderWaveform(blob, token, signal) {
   if (blob.size > 96 * 1024 * 1024) { $('waveformLabel').textContent = '文件较大，波形已省略；仍可正常剪辑'; return; }
-  const ctx = new AudioContext();
+  // Preview peaks do not need full-rate PCM. This uses a quarter of 48 kHz PCM memory.
+  const ctx = new AudioContext({sampleRate:12000});
+  const close = () => { ctx.close().catch(() => {}); };
+  signal.addEventListener('abort', close, {once:true});
   try {
     const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
-    if (token !== renderToken) return;
+    if (token !== renderToken || signal.aborted) return;
     const planes = Array.from({length: Math.min(2, decoded.numberOfChannels)}, (_, i) => decoded.getChannelData(i));
     const data = planes[0], bins = Math.min(1800, data.length);
     const values = new Float32Array(bins);
@@ -233,11 +297,26 @@ async function renderWaveform(blob, token) {
       }
     }
     peaks = values; $('waveformLabel').hidden = true; drawWaves();
+    savePreview(token, {peaks:values});
   } catch (error) {
-    if (token === renderToken) $('waveformLabel').textContent = '无可用音轨或无法生成波形；仍可剪辑';
-  } finally { await ctx.close().catch(() => {}); }
+    if (token === renderToken && !signal.aborted) {
+      const label = '无可用音轨或无法生成波形；仍可剪辑';
+      $('waveformLabel').textContent = label;
+    }
+  } finally { signal.removeEventListener('abort', close); if (ctx.state !== 'closed') close(); }
 }
-function drawWave(canvas, withProgress = false) {
+function resetAudioWave() {
+  cancelAnimationFrame(audioWaveFrame); audioWaveFrame = 0; waveProgress = null;
+}
+function requestAudioWave() {
+  if (audioWaveFrame || current?.mode !== 'audio') return;
+  audioWaveFrame = requestAnimationFrame(now => {
+    audioWaveFrame = 0;
+    // Keep fading after a pause, then stop requesting frames once all bars settle.
+    if (current?.mode === 'audio' && drawWave($('audioWave'), true, now)) requestAudioWave();
+  });
+}
+function drawWave(canvas, withProgress = false, now = performance.now()) {
   const box = canvas.getBoundingClientRect(); if (!box.width || !box.height) return;
   const scale = Math.min(2, window.devicePixelRatio || 1);
   const width = Math.round(box.width * scale), height = Math.round(box.height * scale);
@@ -246,37 +325,81 @@ function drawWave(canvas, withProgress = false) {
   if (!peaks) return;
   const count = Math.max(1, Math.floor(box.width / (withProgress ? 5 : 3)));
   const progress = current && duration ? player().currentTime / duration : 0;
+  const fadeDuration = reducedWaveMotion.matches ? 0 : 320;
+  if (withProgress && (waveProgress?.peaks !== peaks || waveProgress.count !== count)) {
+    waveProgress = {peaks, count, bars:Array.from({length:count}, (_, i) => {
+      const lit = Number(i / count < progress);
+      return {from:lit, to:lit, since:now};
+    })};
+  }
+  let fading = false;
   for (let i = 0; i < count; i++) {
     let peak = 0;
     const from = Math.floor(i * peaks.length / count), to = Math.max(from + 1, Math.floor((i + 1) * peaks.length / count));
     for (let j = from; j < to; j++) peak = Math.max(peak, peaks[j] || 0);
     const h = Math.max(scale, Math.sqrt(peak) * height * .82);
-    ctx.fillStyle = withProgress ? (i / count <= progress ? '#b2ef83' : '#536e52') : '#9bc88d';
-    ctx.fillRect(i * width / count, (height - h) / 2, Math.max(scale, width / count - 1.5 * scale), h);
-  }
-}
-function drawWaves() { drawWave($('waveform')); drawWave($('audioWave'), true); }
-async function renderFilmstrip(url, token, signal) {
-  const media = document.createElement('video'); media.muted = true; media.preload = 'auto'; media.playsInline = true; media.src = url;
-  const canvas = document.createElement('canvas'); canvas.width = 160; canvas.height = 90;
-  const ctx = canvas.getContext('2d');
-  const cancel = () => { media.removeAttribute('src'); media.load(); };
-  signal.addEventListener('abort', cancel, {once:true});
-  try {
-    if (media.readyState < 1) await waitForEvent(media, 'loadedmetadata', 12000, signal);
-    const length = Number.isFinite(media.duration) ? media.duration : duration;
-    for (let i = 0; i < 10; i++) {
-      if (signal.aborted || token !== renderToken) return;
-      await seekMedia(media, Math.min(Math.max(0, length - .1), length * (i + .15) / 10), signal);
-      if (media.readyState < 2) await waitForEvent(media, 'loadeddata', 8000, signal);
-      if (signal.aborted || token !== renderToken) return;
-      ctx.drawImage(media, 0, 0, 160, 90);
-      const image = document.createElement('img'); image.src = canvas.toDataURL('image/jpeg', .65); image.alt = ''; image.draggable = false;
-      $('filmstrip').append(image); $('filmstripLabel').hidden = true;
+    let light = 1;
+    if (withProgress) {
+      const bar = waveProgress.bars[i], target = Number(i / count < progress);
+      const t = fadeDuration ? clamp((now - bar.since) / fadeDuration, 0, 1) : 1;
+      light = bar.from + (bar.to - bar.from) * t * t * (3 - 2 * t);
+      if (bar.to !== target) { bar.from = light; bar.to = target; bar.since = now; }
+      if (!fadeDuration) light = target;
+      fading ||= light !== bar.to;
     }
+    ctx.fillStyle = withProgress ? `rgb(${Math.round(83 + 95 * light)}, ${Math.round(110 + 129 * light)}, ${Math.round(82 + 49 * light)})` : '#b2ef83';
+    const barWidth = Math.max(scale, width / count - 1.5 * scale);
+    ctx.beginPath();
+    ctx.roundRect(i * width / count, (height - h) / 2, barWidth, h, Math.min(barWidth, h) / 2);
+    ctx.fill();
+  }
+  return fading;
+}
+function drawWaves() { drawWave($('waveform')); requestAudioWave(); }
+function showThumbnails(images) {
+  const elements = images.map(src => {
+    const image = document.createElement('img'); image.src = src; image.alt = ''; image.draggable = false; return image;
+  });
+  $('filmstrip').replaceChildren(...elements); $('filmstripLabel').hidden = true;
+}
+async function renderFilmstrip(url, token, signal) {
+  const holder = $('filmstrip'), main = player(); holder.setAttribute('aria-busy', 'true');
+  const count = clamp(Math.ceil($('timeline').clientWidth / 100), 4, 12);
+  const snapshot = media => {
+    const canvas = document.createElement('canvas'); canvas.width = 144; canvas.height = 81;
+    canvas.getContext('2d').drawImage(media, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', .6);
+  };
+  try {
+    // Reuse the player's first decoded frame immediately; refine the rest progressively.
+    if (main.readyState < 2) await waitForEvent(main, 'loadeddata', 12000, signal);
+    if (signal.aborted || token !== renderToken) return;
+    const images = Array(count).fill(snapshot(main)); showThumbnails(images);
+    const length = Number.isFinite(main.duration) ? main.duration : duration;
+    // If the user has already scrubbed, the seed is only a placeholder for slot zero.
+    let next = main.currentTime < .1 ? 1 : 0, completed = next;
+    async function fillFrames() {
+      const media = document.createElement('video'); media.muted = true; media.preload = 'metadata'; media.playsInline = true;
+      const cancel = () => { media.removeAttribute('src'); media.load(); };
+      signal.addEventListener('abort', cancel, {once:true});
+      try {
+        media.src = url;
+        if (media.readyState < 1) await waitForEvent(media, 'loadedmetadata', 12000, signal);
+        while (next < count && !signal.aborted && token === renderToken) {
+          const index = next++;
+          await seekMedia(media, Math.min(Math.max(0, length - .1), length * (index + .15) / count), signal);
+          if (media.readyState < 2) await waitForEvent(media, 'loadeddata', 8000, signal);
+          if (signal.aborted || token !== renderToken) return;
+          images[index] = snapshot(media); holder.children[index].src = images[index]; completed++;
+        }
+      } finally { signal.removeEventListener('abort', cancel); cancel(); }
+    }
+    // Two decoders avoid a long serial seek chain, without spawning one per thumbnail.
+    await Promise.allSettled([fillFrames(), fillFrames()]);
+    if (token === renderToken && !signal.aborted && completed === count) savePreview(token, {thumbnails:images});
   } catch (error) {
     if (token === renderToken && !signal.aborted && !$('filmstrip').children.length) $('filmstripLabel').textContent = '视频轨道 · 点击时间轴预览画面';
-  } finally { signal.removeEventListener('abort', cancel); cancel(); }
+  } finally { if (token === renderToken) holder.setAttribute('aria-busy', 'false'); }
 }
 function waitForEvent(element, event, timeoutMs = 15000, signal) {
   return new Promise((resolve, reject) => {
@@ -306,6 +429,36 @@ function setProgress(percent, label) {
   $('exportProgress').hidden = false; $('progressBar').value = value;
   $('progressPercent').textContent = `${value}%`; $('progressLabel').textContent = label;
 }
+// Decode only once per export, then transfer the selected audio to a dedicated encoder worker.
+async function createMP3(blob, start, end) {
+  const ctx = new AudioContext({sampleRate:48000});
+  let decoded;
+  try { decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); }
+  finally { await ctx.close(); }
+  const first = Math.max(0, Math.floor(start * decoded.sampleRate));
+  const last = Math.min(decoded.length, Math.floor(end * decoded.sampleRate));
+  if (last <= first) throw new Error('所选区间没有音频');
+  const sampleRate = decoded.sampleRate;
+  const planes = Array.from({length:Math.min(2, decoded.numberOfChannels)}, (_, channel) => decoded.getChannelData(channel).slice(first, last));
+  decoded = null;
+  const worker = new Worker('mp3-worker.js');
+  let timer;
+  try {
+    return await new Promise((resolve, reject) => {
+      const refreshTimeout = () => { clearTimeout(timer); timer = setTimeout(() => reject(new Error('MP3 编码长时间无响应，请重试')), 60000); };
+      worker.onmessage = event => {
+        const message = event.data; refreshTimeout();
+        if (message.type === 'progress') setProgress(15 + message.progress * 84, '正在生成 MP3');
+        else if (message.type === 'done') resolve(message.blob);
+        else if (message.type === 'error') reject(new Error(message.error));
+      };
+      worker.onerror = event => { event.preventDefault(); reject(new Error('MP3 编码器加载或运行失败，请重新加载扩展后重试')); };
+      worker.onmessageerror = () => reject(new Error('无法读取 MP3 编码结果'));
+      refreshTimeout(); setProgress(15, '正在生成 MP3');
+      worker.postMessage({planes, sampleRate}, planes.map(plane => plane.buffer));
+    });
+  } finally { clearTimeout(timer); worker.terminate(); }
+}
 // Retain selected PCM frames and encode standard 16-bit WAV audio.
 async function createWAV(blob, start, end) {
   const ctx = new AudioContext(); let decoded;
@@ -334,7 +487,9 @@ async function createWAV(blob, start, end) {
   return new Blob([buffer], {type:'audio/wav'});
 }
 // Re-encode video in real time, routing export audio away from the speakers.
-async function createVideoClip(url, start, end) {
+async function createVideoClip(url, start, end, format) {
+  const mime = videoMime(format);
+  if (!mime) throw new Error(format === 'mp4' ? '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或选择 WebM。' : '浏览器不支持 WebM 导出');
   const media = document.createElement('video'); media.playsInline = true; media.preload = 'auto'; media.src = url;
   media.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;pointer-events:none'; document.body.append(media);
   let stream, captured, recorder, audioCtx, timer; const chunks = [];
@@ -347,9 +502,7 @@ async function createVideoClip(url, start, end) {
     captured = media.captureStream(); await media.play();
     if (!captured.getVideoTracks().length) throw new Error('未获得视频轨道');
     stream = new MediaStream([...captured.getVideoTracks(), ...destination.stream.getAudioTracks()]);
-    const mime = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'].find(type => MediaRecorder.isTypeSupported(type));
-    if (!mime) throw new Error('浏览器不支持视频导出');
-    recorder = new MediaRecorder(stream, {mimeType:mime, videoBitsPerSecond:3500000});
+    recorder = new MediaRecorder(stream, {mimeType:mime, videoBitsPerSecond:3500000, audioBitsPerSecond:192000});
     const done = new Promise((resolve, reject) => {
       recorder.ondataavailable = event => { if (event.data?.size) chunks.push(event.data); };
       recorder.onerror = () => reject(new Error('视频编码失败'));
@@ -365,7 +518,7 @@ async function createVideoClip(url, start, end) {
     });
     recorder.start(300); await done;
     if (!chunks.length) throw new Error('导出的视频为空');
-    return new Blob(chunks, {type:mime});
+    return new Blob(chunks, {type:recorder.mimeType || mime});
   } finally {
     clearInterval(timer); if (recorder && recorder.state !== 'inactive') recorder.stop();
     media.pause(); stream?.getTracks().forEach(track => track.stop()); captured?.getTracks().forEach(track => track.stop());
@@ -376,18 +529,21 @@ async function cut() {
   if (exporting || !current) return;
   exporting = true; clearClip(); updateControls(); player().pause(); previewMode = false;
   const [start, end] = bounds();
+  const format = $('exportFormat').value;
   try {
+    if (!(current.mode === 'audio' ? ['mp3', 'wav'] : ['mp4', 'webm']).includes(format)) throw new Error('请选择可用的导出格式');
     if (end - start < minClip() - .011) throw new Error('请选择至少 0.5 秒的片段');
     setProgress(0, current.mode === 'audio' ? '正在解码音频' : '正在准备视频');
     status('正在处理，请保持此页面打开。');
-    if (current.mode === 'audio') clipBlob = await createWAV(sourceBlob, start, end);
-    else if (start === 0 && Math.abs(end - duration) < .011) clipBlob = sourceBlob;
-    else clipBlob = await createVideoClip(sourceURL, start, end);
+    if (current.mode === 'audio') clipBlob = await (format === 'mp3' ? createMP3(sourceBlob, start, end) : createWAV(sourceBlob, start, end));
+    else if (format === 'webm' && sourceBlob.type.startsWith('video/webm') && start === 0 && Math.abs(end - duration) < .011) clipBlob = sourceBlob;
+    else clipBlob = await createVideoClip(sourceURL, start, end, format);
+    clipFormat = format;
     setProgress(100, '导出完成');
-    download(clipBlob, `${currentName}-剪辑.${current.mode === 'audio' ? 'wav' : 'webm'}`);
-    status(`已开始下载 · ${(clipBlob.size / 1024 / 1024).toFixed(2)} MB`);
+    downloadClip();
+    status(`已开始下载 · ${(clipBlob.size / 1024 / 1024).toFixed(2)} MB`, false, 'success');
     $('saveClip').hidden = false;
-  } catch (error) { $('exportProgress').hidden = true; fail(error); }
+  } catch (error) { $('cut').dataset.state = 'error'; $('exportProgress').hidden = true; fail(error); }
   finally { exporting = false; updateControls(); }
 }
 function timeAtPointer(event) {
@@ -449,22 +605,29 @@ function init() {
   on('undo', 'click', () => restoreBounds()); on('redo', 'click', () => restoreBounds(true)); on('reset', 'click', resetSelection);
   on('speed', 'change', () => { if (current) player().playbackRate = Number($('speed').value); });
   on('volume', 'input', () => { if (current) player().volume = Number($('volume').value); });
-  on('saveClip', 'click', () => { if (clipBlob) download(clipBlob, `${currentName}-剪辑.${current.mode === 'audio' ? 'wav' : 'webm'}`); });
-  on('original', 'click', () => { if (sourceBlob) download(sourceBlob, `${currentName}-原始.webm`); });
+  on('exportFormat', 'change', () => {
+    if (!current || exporting) return;
+    preferredFormats[current.mode] = $('exportFormat').value;
+    clearClip(); updateExportHint(); updateControls();
+  });
+  on('saveClip', 'click', downloadClip);
   on('delete', 'click', async () => {
     if (!current || exporting || !confirm('确定永久删除这条录制及其原始文件吗？此操作无法撤销。')) return;
-    const id = current.id; await dbDelete(id); ++renderToken; visualController?.abort(); cancelAnimationFrame(animationFrame);
+    const id = current.id; ++renderToken; visualController?.abort(); cancelAnimationFrame(animationFrame);
+    await previewWrites; await dbDelete(id); previewMemory.delete(id); activePreview = null;
     for (const media of [$('player'), $('audioPlayer')]) { media.pause(); media.removeAttribute('src'); media.load(); }
     current = null; sourceBlob = null; clipBlob = null; peaks = null;
+    resetAudioWave();
     if (sourceURL) { URL.revokeObjectURL(sourceURL); sourceURL = null; }
     $('workArea').hidden = true; $('empty').hidden = false; document.body.classList.remove('is-playing', 'audio-mode');
     clearClip(); updateControls();
     const sessions = await loadHistory();
     if (sessions.length) await loadSession(sessions[0].id);
     else {
-      $('formatText').textContent = $('originalDuration').textContent = $('fileSize').textContent = '—';
+      $('exportFormat').replaceChildren(new Option('—', ''));
+      $('originalDuration').textContent = $('fileSize').textContent = '—';
       $('selectionDuration').textContent = '00:00.0'; $('retainedText').textContent = '选择录制后开始剪辑'; $('retainedBar').style.width = '0';
-      $('startInput').value = $('endInput').value = '00:00.0'; $('fileMeta').textContent = '简单一点，剪得刚好。';
+      $('startInput').value = $('endInput').value = '00:00.0'; $('fileMeta').textContent = '刻页 · 记录网页的声音与画面';
     }
   });
   for (const media of [$('player'), $('audioPlayer')]) {

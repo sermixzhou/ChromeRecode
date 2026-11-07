@@ -1,13 +1,35 @@
 {
   "manifest_version": 3,
-  "name": "页签录音录像 · 简易剪辑",
-  "short_name": "页签录制",
-  "description": "录制当前 Chrome 页签声音或视频，简单截取片段并下载到本地。",
+  "name": "刻页",
+  "short_name": "刻页",
+  "description": "记录网页的声音与画面，本地预览、裁剪并导出 MP4、WebM、MP3 或 WAV。",
   "version": "0.1.0",
   "minimum_chrome_version": "116",
-  "permissions": ["tabCapture", "offscreen", "storage", "activeTab"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "页签录音录像", "default_popup": "popup.html", "default_icon": {"16":"icons/icon16.png", "32":"icons/icon32.png", "48":"icons/icon48.png"}},
-  "icons": {"16":"icons/icon16.png", "32":"icons/icon32.png", "48":"icons/icon48.png", "128":"icons/icon128.png"},
-  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'self'" }
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "刻页 · 网页录制",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
 }

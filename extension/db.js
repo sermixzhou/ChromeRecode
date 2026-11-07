@@ -1,5 +1,5 @@
 const DATABASE = 'tab-recorder-zh-v1';
-const VERSION = 1;
+const VERSION = 2;
 function openDatabase() {
   return new Promise((resolve,reject)=>{
     const request = indexedDB.open(DATABASE,VERSION);
@@ -7,6 +7,7 @@ function openDatabase() {
       const db=request.result;
       if(!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions',{keyPath:'id'});
       if(!db.objectStoreNames.contains('chunks')) db.createObjectStore('chunks',{keyPath:['id','index']});
+      if(!db.objectStoreNames.contains('previews')) db.createObjectStore('previews',{keyPath:'id'});
     };
     request.onsuccess=()=>resolve(request.result);
     request.onerror=()=>reject(request.error);
@@ -53,9 +54,10 @@ async function dbChunks(id) {
 async function dbDelete(id) {
   const db=await openDatabase();
   try {await new Promise((resolve,reject)=>{
-    const tx=db.transaction(['sessions','chunks'],'readwrite');
+    const tx=db.transaction(['sessions','chunks','previews'],'readwrite');
     tx.objectStore('sessions').delete(id);
     tx.objectStore('chunks').delete(IDBKeyRange.bound([id,0],[id,Number.MAX_SAFE_INTEGER]));
+    tx.objectStore('previews').delete(id);
     tx.oncomplete=resolve;
     tx.onerror=()=>reject(tx.error);
   });} finally {db.close();}

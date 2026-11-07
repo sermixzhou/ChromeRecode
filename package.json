@@ -1,9 +1,10 @@
 {
-  "name": "chrome-recode",
+  "name": "keye-recorder",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "node tests/editor.test.cjs"
+    "test": "node tests/editor.test.cjs && node tests/popup.test.cjs",
+    "test:website": "node tests/website.test.cjs"
   },
   "devDependencies": {
     "playwright": "1.65.0"

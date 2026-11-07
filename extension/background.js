@@ -12,7 +12,7 @@ async function saveState(state) {
   await chrome.storage.session.set({recState: state});
   await chrome.action.setBadgeText({text: state.phase === 'recording' ? 'REC' : state.phase === 'paused' ? '||' : ''});
   if (state.phase === 'recording' || state.phase === 'paused') {
-    await chrome.action.setBadgeBackgroundColor({ color: '#dc2626' });
+    await chrome.action.setBadgeBackgroundColor({ color: state.phase === 'paused' ? '#f0b078' : '#f46a66' });
   }
 }
 async function ensureOffscreen() {
@@ -71,7 +71,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'REQUEST_START' && sender.url?.includes('popup.html')) {
-    start(msg.tabId, msg.tabTitle || '网页录制', msg.mode).then(sendResponse);
+    start(msg.tabId, msg.tabTitle || '刻页录制', msg.mode).then(sendResponse);
     return true;
   }
   if (['REQUEST_STOP','REQUEST_PAUSE','REQUEST_RESUME'].includes(msg.type) && sender.url?.includes('popup.html')) {
