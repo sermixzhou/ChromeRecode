@@ -1,0 +1,62 @@
+const DATABASE = 'tab-recorder-zh-v1';
+const VERSION = 1;
+function openDatabase() {
+  return new Promise((resolve,reject)=>{
+    const request = indexedDB.open(DATABASE,VERSION);
+    request.onupgradeneeded = () => {
+      const db=request.result;
+      if(!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('chunks')) db.createObjectStore('chunks',{keyPath:['id','index']});
+    };
+    request.onsuccess=()=>resolve(request.result);
+    request.onerror=()=>reject(request.error);
+  });
+}
+async function dbWrite(storeName, data) {
+  const db=await openDatabase();
+  try {
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(storeName,'readwrite');
+      tx.objectStore(storeName).put(data);
+      tx.oncomplete=resolve;
+      tx.onerror=()=>reject(tx.error);
+      tx.onabort=()=>reject(tx.error || new Error('数据库事务中断'));
+    });
+  } finally {db.close();}
+}
+async function dbRead(storeName,key) {
+  const db=await openDatabase();
+  try {return await new Promise((resolve,reject)=>{
+    const req=db.transaction(storeName).objectStore(storeName).get(key);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });} finally {db.close();}
+}
+async function dbAllSessions() {
+  const db=await openDatabase();
+  try {return await new Promise((resolve,reject)=>{
+    const req=db.transaction('sessions').objectStore('sessions').getAll();
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });} finally {db.close();}
+}
+async function dbChunks(id) {
+  const db=await openDatabase();
+  try {return await new Promise((resolve,reject)=>{
+    const tx=db.transaction('chunks');
+    const range=IDBKeyRange.bound([id,0],[id,Number.MAX_SAFE_INTEGER]);
+    const req=tx.objectStore('chunks').getAll(range);
+    req.onsuccess=()=>resolve(req.result.sort((a,b)=>a.index-b.index));
+    req.onerror=()=>reject(req.error);
+  });} finally {db.close();}
+}
+async function dbDelete(id) {
+  const db=await openDatabase();
+  try {await new Promise((resolve,reject)=>{
+    const tx=db.transaction(['sessions','chunks'],'readwrite');
+    tx.objectStore('sessions').delete(id);
+    tx.objectStore('chunks').delete(IDBKeyRange.bound([id,0],[id,Number.MAX_SAFE_INTEGER]));
+    tx.oncomplete=resolve;
+    tx.onerror=()=>reject(tx.error);
+  });} finally {db.close();}
+}

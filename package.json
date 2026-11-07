@@ -1,0 +1,11 @@
+{
+  "name": "chrome-recode",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node tests/editor.test.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}

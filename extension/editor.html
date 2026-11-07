@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>轻剪 · 录音录像编辑器</title>
+  <link rel="stylesheet" href="style.css"><link rel="stylesheet" href="editor.css">
+</head>
+<body class="studio">
+  <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-cut" viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="m8.2 8.2 12 12M8.2 15.8 20 4"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3Z"/></symbol>
+    <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 5 11 7-11 7Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M5 5v14m14-14L8 12l11 7Z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M19 5v14M5 5l11 7-11 7Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 0 14"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4ZM17 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V4h7l3 3h8v13H3Z"/></symbol>
+  </defs></svg>
+  <header class="studio-header">
+    <a class="studio-brand" href="editor.html" aria-label="轻剪首页"><span class="studio-logo"><svg class="icon"><use href="#i-cut"/></svg></span><strong>轻剪</strong><span class="brand-caption">录音录像编辑器</span></a>
+    <span class="local-badge"><span></span> 本地处理，安心剪辑</span>
+    <button id="cut" class="studio-button accent" disabled><svg class="icon"><use href="#i-download"/></svg><span id="exportLabel">导出片段</span></button>
+  </header>
+  <div class="studio-layout">
+    <aside class="library">
+      <div class="library-heading"><h2>我的录制 <span id="historyCount" class="count">0</span></h2><svg class="icon"><use href="#i-folder"/></svg></div>
+      <p class="library-caption">选择一条录制，开始创作</p>
+      <div id="history" class="recording-list"><p class="subtle">正在读取录制…</p></div>
+      <div class="library-tip"><span class="tip-mark">✦</span><strong>留下精彩的部分</strong><p>拖动时间轴两端的手柄，<br>保留你想要的画面或声音。</p></div>
+    </aside>
+    <main class="workspace">
+      <div id="empty" class="studio-empty"><div class="empty-symbol"><svg class="icon"><use href="#i-cut"/></svg></div><h1>每一段录制，都有精彩</h1><p>从左侧选择录制，或点击浏览器中的扩展图标，<br>录下画面与声音，结束后就能在这里剪辑。</p><span>预览 · 选择片段 · 导出</span></div>
+      <div id="workArea" hidden>
+        <section class="preview-section">
+          <div class="preview-heading"><div class="recording-title"><span id="modeBadge" class="mode-badge">视频</span><h1 id="fileTitle">网页录制</h1></div><span class="preview-label">预览窗口</span></div>
+          <div id="mediaFrame" class="preview-stage">
+            <video id="player" playsinline preload="auto"></video><audio id="audioPlayer" preload="auto" hidden></audio>
+            <div id="audioVisual" class="audio-visual" hidden><span class="audio-orbit"><svg class="icon"><use href="#i-audio"/></svg></span><h2 id="audioTitle">音频录制</h2><p>让每一段声音，恰到好处</p><canvas id="audioWave" aria-label="音频波形预览"></canvas><span class="audio-type">AUDIO RECORDING</span></div>
+            <span id="stageBadge" class="stage-badge">原始画面</span>
+          </div>
+          <div class="transport">
+            <span class="playback-time"><strong id="currentText">00:00.0</strong><span>/</span><span id="durationText">00:00.0</span></span>
+            <div class="transport-buttons"><button id="jumpStart" class="icon-button" title="跳到片段起点" aria-label="跳到片段起点"><svg class="icon"><use href="#i-back"/></svg></button><button id="playPause" class="play-button" title="播放 / 暂停（空格）" aria-label="播放"><svg class="icon"><use id="playIcon" href="#i-play"/></svg></button><button id="jumpEnd" class="icon-button" title="跳到片段终点" aria-label="跳到片段终点"><svg class="icon"><use href="#i-next"/></svg></button></div>
+            <div class="playback-options"><select id="speed" aria-label="预览播放速度" title="仅影响预览速度"><option value="0.5">0.5×</option><option value="1" selected>1.0×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select><svg class="icon volume-icon"><use href="#i-volume"/></svg><input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="预览音量" title="仅影响预览音量"></div>
+          </div>
+        </section>
+        <section class="timeline-section" aria-label="剪辑时间轴">
+          <div class="timeline-toolbar"><div class="timeline-tools"><button id="undo" class="icon-button" title="撤销（Ctrl / ⌘ Z）" aria-label="撤销" disabled><svg class="icon"><use href="#i-undo"/></svg></button><button id="redo" class="icon-button redo-icon" title="重做（Ctrl / ⌘ Shift Z）" aria-label="重做" disabled><svg class="icon"><use href="#i-undo"/></svg></button><span class="tool-divider"></span><button id="markStart" class="text-tool" title="将播放位置设为起点（I）">设为起点 <kbd>I</kbd></button><button id="markEnd" class="text-tool" title="将播放位置设为终点（O）">设为终点 <kbd>O</kbd></button></div><button id="reset" class="text-tool reset-tool"><svg class="icon"><use href="#i-reset"/></svg>重置选区</button></div>
+          <div class="timeline-summary"><div><strong>剪辑时间轴</strong><span>拖动两端手柄，选中要保留的片段</span></div><span id="selectedText" class="selected-pill">已选 00:00.0</span></div>
+          <div class="track-layout"><div class="track-labels"><span>时间</span><span id="visualTrackLabel"><svg class="icon"><use href="#i-video"/></svg>画面</span><span><svg class="icon"><use href="#i-audio"/></svg>声音</span></div>
+            <div id="timeline" class="timeline" tabindex="0" role="group" aria-label="点击定位；方向键移动播放位置">
+              <div id="ruler" class="timeline-ruler"></div>
+              <div class="track visual-track"><div id="filmstrip" class="filmstrip"></div><span id="filmstripLabel" class="track-placeholder">正在读取画面…</span></div>
+              <div class="track waveform-track"><canvas id="waveform" aria-label="录制的实际音频波形"></canvas><span id="waveformLabel" class="track-placeholder">正在分析声音…</span></div>
+              <div id="trimOverlay" class="trim-overlay"><div class="trim-shade before"></div><div id="selection" class="trim-selection"><button id="startHandle" class="trim-handle start-handle" role="slider" aria-label="片段起点" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0" title="拖动调整起点"><span></span></button><button id="endHandle" class="trim-handle end-handle" role="slider" aria-label="片段终点" aria-valuemin="0" aria-valuemax="1" aria-valuenow="1" title="拖动调整终点"><span></span></button></div><div class="trim-shade after"></div></div>
+              <div id="playhead" class="playhead"><span></span></div>
+            </div>
+          </div>
+          <div class="timeline-footer"><span><span class="selection-dot"></span>亮色区域将被保留，暗色区域将被裁去</span><span><kbd>空格</kbd> 播放 / 暂停 <span class="shortcut-separator">·</span> <kbd>←</kbd> <kbd>→</kbd> 微调</span></div>
+          <input id="startRange" type="range" min="0" max="1" step="0.01" value="0" hidden><input id="endRange" type="range" min="0" max="1" step="0.01" value="1" hidden>
+        </section>
+      </div>
+    </main>
+    <aside id="inspector" class="inspector">
+      <div class="inspector-heading"><h2>片段设置</h2><span>TRIM</span></div>
+      <div class="inspector-content">
+        <div class="section-eyebrow">保留范围</div><p class="inspector-description">调整起止时间，留下需要的片段。</p>
+        <label class="time-label" for="startInput"><span>开始时间</span><kbd>I</kbd></label><div class="time-input-wrap"><span class="time-input-dot"></span><input id="startInput" value="00:00.0" inputmode="decimal" aria-label="开始时间，分:秒或秒数" disabled><button id="startAtPlayhead" title="使用当前播放位置作为起点" aria-label="使用当前播放位置作为起点" disabled>定位</button></div>
+        <label class="time-label" for="endInput"><span>结束时间</span><kbd>O</kbd></label><div class="time-input-wrap"><span class="time-input-dot end-dot"></span><input id="endInput" value="00:00.0" inputmode="decimal" aria-label="结束时间，分:秒或秒数" disabled><button id="endAtPlayhead" title="使用当前播放位置作为终点" aria-label="使用当前播放位置作为终点" disabled>定位</button></div>
+        <div class="duration-card"><span>片段时长</span><strong id="selectionDuration">00:00.0</strong><div><span id="retainedBar"></span></div><small id="retainedText">选择录制后开始剪辑</small></div>
+        <button id="preview" class="studio-button outline wide" disabled><svg class="icon"><use href="#i-play"/></svg>预览选中片段</button>
+        <div class="inspector-divider"></div>
+        <div class="section-eyebrow">导出信息</div><div class="export-info"><span>文件格式</span><strong id="formatText">—</strong></div><div class="export-info"><span>原始时长</span><strong id="originalDuration">—</strong></div><div class="export-info"><span>文件大小</span><strong id="fileSize">—</strong></div>
+        <p id="hint" class="export-note">视频导出 WebM，音频导出 WAV。所有处理都在本地完成。</p>
+        <div id="exportProgress" class="export-progress" hidden><div><span id="progressLabel">正在导出</span><span id="progressPercent">0%</span></div><progress id="progressBar" max="100" value="0" aria-label="导出进度"></progress></div>
+        <div id="status" class="studio-status" role="status" aria-live="polite"></div>
+        <button id="saveClip" class="studio-button outline wide" hidden disabled><svg class="icon"><use href="#i-download"/></svg>再次下载片段</button>
+        <div class="source-actions"><button id="original" class="text-tool" disabled><svg class="icon"><use href="#i-download"/></svg>下载原始录制</button><button id="delete" class="text-tool delete-tool" disabled><svg class="icon"><use href="#i-trash"/></svg>删除这条录制</button></div>
+      </div>
+    </aside>
+  </div>
+  <footer class="studio-footer"><span><span class="footer-dot"></span> 所有文件仅保存在当前浏览器</span><span id="fileMeta">简单一点，剪得刚好。</span></footer>
+  <script src="db.js"></script><script src="editor.js"></script>
+</body>
+</html>
