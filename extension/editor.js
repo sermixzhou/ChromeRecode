@@ -201,6 +201,7 @@ async function loadSession(id) {
   $('fileSize').textContent = `${(sourceBlob.size / 1024 / 1024).toFixed(2)} MB`;
   $('fileMeta').textContent = `${audio ? '音频' : '视频'}录制 · ${(sourceBlob.size / 1024 / 1024).toFixed(2)} MB`;
   $('hint').textContent = audio ? '导出 WAV 音频。预览音量与倍速不影响导出文件。' : '导出 WebM 视频。裁剪时按原速重新编码，耗时约等于片段时长，请保持此页打开。';
+  $('cut').title = $('hint').textContent;
   $('filmstrip').replaceChildren(); $('filmstripLabel').hidden = false; $('filmstripLabel').textContent = '正在读取画面…';
   $('waveformLabel').hidden = false; $('waveformLabel').textContent = '正在分析声音…';
   clearClip(); setDuration(Math.max(.01, (session.durationMs || 500) / 1000));
