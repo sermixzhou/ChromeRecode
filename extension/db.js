@@ -25,6 +25,21 @@ async function dbWrite(storeName, data) {
     });
   } finally {db.close();}
 }
+// Commit each chunk and its recovery checkpoint in the same transaction.
+async function dbAppendChunk(session, record) {
+  const db=await openDatabase();
+  try {await new Promise((resolve,reject)=>{
+    const tx=db.transaction(['sessions','chunks'],'readwrite');
+    tx.objectStore('chunks').put(record);tx.objectStore('sessions').put(session);
+    tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('录制分片保存中断'));
+  });}finally{db.close();}
+}
+async function dbRecoverRecordings() {
+  const sessions=await dbAllSessions();
+  for(const session of sessions.filter(item=>item.status==='recording'&&item.chunkCount>0)) {
+    await dbWrite('sessions',{...session,status:'ready',durationMs:session.savedDurationMs||session.durationMs||session.chunkCount*1000,completedAt:session.lastSavedAt||Date.now(),recovered:true});
+  }
+}
 async function dbRead(storeName,key) {
   const db=await openDatabase();
   try {return await new Promise((resolve,reject)=>{

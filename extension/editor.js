@@ -26,12 +26,15 @@ const videoMimeTypes = {
   mp4:['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1.424028,mp4a.40.2'],
   webm:['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
 };
-const variableMp4MimeTypes = ['video/mp4;codecs=avc3,mp4a.40.2', 'video/mp4;codecs=avc3.424028,mp4a.40.2'];
-// avc3 carries H.264 configuration changes in the stream, including new dimensions.
-const videoMime = format => (format === 'mp4' && current?.variableResolution ? variableMp4MimeTypes : videoMimeTypes[format])?.find(type => MediaRecorder.isTypeSupported(type));
-const mp4UnavailableHint = () => current?.variableResolution
-  ? '此录制包含窗口或全屏尺寸变化，当前浏览器不支持对应的 MP4 编码，请更新 Chrome 或使用 WebM。'
-  : '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或使用 WebM。';
+const videoExportSupport = {mp4:true,webm:true};
+const videoMime = format => typeof VideoEncoder !== 'undefined' && typeof VideoDecoder !== 'undefined' && typeof Worker !== 'undefined' && videoExportSupport[format] ? videoMimeTypes[format]?.[0] : undefined;
+async function checkVideoExportCapabilities() {
+  for (const [format,codec] of [['mp4','avc1.42001f'],['webm','vp8']]) {
+    try {videoExportSupport[format]=(await VideoEncoder.isConfigSupported({codec,width:640,height:360,bitrate:KeyeMediaQuality.exportBitrate(640,360,format)})).supported;}
+    catch {videoExportSupport[format]=false;}
+  }
+}
+const mp4UnavailableHint = () => '当前浏览器或系统不支持 MP4 编码，请更新 Chrome 或使用 WebM。';
 const player = () => current?.mode === 'audio' ? $('audioPlayer') : $('player');
 const startTime = () => Number($('startRange').value);
 const endTime = () => Number($('endRange').value);
@@ -79,6 +82,7 @@ function remember(before) {
   redoStack = []; updateBounds();
 }
 function clearClip() {
+  if (clipBlob) KeyeVideoExport.release(clipBlob);
   clipBlob = null; clipFormat = ''; $('saveClip').disabled = true; $('saveClip').hidden = true;
   $('cut').dataset.state = 'idle';
   $('exportProgress').hidden = true; status('');
@@ -94,11 +98,22 @@ function updateControls() {
   document.body.classList.toggle('exporting', exporting);
   $('exportLabel').textContent = exporting ? '正在导出…' : $('cut').dataset.state === 'error' ? '重试导出' : '导出片段';
 }
+function canExportOriginalWebM() {
+  // Only bypass conversion when the fixed recording dimensions prove that
+  // the whole source fits the cap. Legacy/unknown-size recordings are converted.
+  const width=current?.videoWidth,height=current?.videoHeight;
+  return current?.mode==='video'&&sourceBlob?.type.startsWith('video/webm')
+    &&Number.isFinite(width)&&Number.isFinite(height)&&width>=2&&height>=2
+    &&width<=1920&&height<=1080&&width%2===0&&height%2===0
+    &&startTime()===0&&Math.abs(endTime()-duration)<.011;
+}
 function updateExportHint() {
   const format = $('exportFormat').value;
   $('hint').textContent = current?.mode === 'audio'
     ? (format === 'mp3' ? 'MP3 · 192 kbps，本地编码。预览音量与倍速不影响导出。' : 'WAV · PCM 音频。预览音量与倍速不影响导出。')
-    : `${format === 'mp4' ? 'MP4 · H.264 / AAC' : 'WebM · VP8 / Opus'}。按原速编码，耗时约等于片段时长，请保持此页打开。`;
+    : format==='webm'&&canExportOriginalWebM()
+      ? 'WebM · 整段保留原始录制，避免再次压缩。完成下载前请保持此页打开。'
+      : `${format === 'mp4' ? 'MP4 · H.264 / AAC' : 'WebM · VP8 / Opus'} · 最高 1080p，保留源视频帧率，等比缩放。完成下载前请保持此页打开。`;
   $('cut').title = $('hint').textContent;
   $('exportFormat').title = current?.mode === 'video' && !videoMime('mp4')
     ? mp4UnavailableHint()
@@ -137,7 +152,7 @@ function updateBounds() {
     handle.setAttribute('aria-valuemax', which === 'start' ? String(end - minClip()) : String(duration));
     handle.setAttribute('aria-valuenow', String(value)); handle.setAttribute('aria-valuetext', precise(value));
   }
-  updateControls();
+  updateExportHint(); updateControls();
 }
 function applyBounds(start, end) {
   $('startRange').value = String(start); $('endRange').value = String(end);
@@ -274,6 +289,8 @@ async function loadSession(id) {
     if (token === renderToken && Number.isFinite(media.duration) && media.duration > 0 && !undoStack.length && !drag && !exporting) setDuration(media.duration);
   };
   media.src = sourceURL; media.volume = Number($('volume').value); media.playbackRate = Number($('speed').value); media.load();
+  if(session.incompleteReason)status('录制因保存错误中断，已保留成功写入的部分，请先导出保存。',true);
+  else if(session.recovered)status('已恢复意外中断前保存的录制，请先导出重要内容。');
   updatePlayback(); drawWaves();
   if (!peaks) renderWaveform(sourceBlob, token, visualController.signal);
   if (!audio) {
@@ -426,9 +443,7 @@ async function seekMedia(media, time, signal) {
   media.currentTime = time; await pending;
 }
 function download(blob, filename) {
-  const url = URL.createObjectURL(blob), anchor = document.createElement('a');
-  anchor.href = url; anchor.download = filename; document.body.append(anchor); anchor.click(); anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  KeyeVideoExport.download(blob, filename);
 }
 function setProgress(percent, label) {
   const value = Math.round(clamp(percent, 0, 100));
@@ -492,7 +507,7 @@ async function createWAV(blob, start, end) {
   }
   return new Blob([buffer], {type:'audio/wav'});
 }
-// Re-encode video in real time, routing export audio away from the speakers.
+// Convert the source file in a local WebCodecs worker, with bounded buffers and disk output.
 async function createVideoClip(url, start, end, format) {
   const mime = videoMime(format);
   if (!mime) throw new Error(format === 'mp4' ? mp4UnavailableHint() : '浏览器不支持 WebM 导出');
@@ -501,9 +516,9 @@ async function createVideoClip(url, start, end, format) {
     return await encodeVideoClip(url, start, end, mime, false);
   } catch (error) {
     if (format !== 'mp4' || error.name !== 'EncodingError') throw error;
-    // isTypeSupported checks the format, not the device's resolution limits.
+    // The initial codec probe does not check this recording's resolution.
     // Retry from the selected start with a fresh encoder and even-sized frames.
-    console.warn('原尺寸 MP4 编码失败，正在尝试兼容模式：', error);
+    console.warn('MP4 编码失败，正在尝试兼容模式：', error);
     setProgress(0, '正在切换兼容编码');
     status('正在使用兼容模式导出（最高 1080p）。');
     const blob = await encodeVideoClip(url, start, end, mime, true);
@@ -511,67 +526,14 @@ async function createVideoClip(url, start, end, format) {
     return blob;
   }
 }
-function videoEncodingError(cause) {
-  const error = new Error(`视频编码失败${cause?.message ? `：${cause.message}` : '，请更新 Chrome 后重试'}`, {cause});
-  error.name = 'EncodingError';
-  return error;
-}
 async function encodeVideoClip(url, start, end, mime, compatible) {
-  const media = document.createElement('video'); media.playsInline = true; media.preload = 'auto'; media.src = url;
-  media.style.cssText = 'position:fixed;left:-10000px;top:0;width:320px;height:180px;pointer-events:none'; document.body.append(media);
-  let stream, captured, recorder, audioCtx, timer, frameCallback; const chunks = [];
-  try {
-    if (media.readyState < 1) await waitForEvent(media, 'loadedmetadata');
-    await seekMedia(media, start);
-    audioCtx = new AudioContext();
-    const source = audioCtx.createMediaElementSource(media), destination = audioCtx.createMediaStreamDestination();
-    source.connect(destination); await audioCtx.resume();
-    if (compatible) {
-      const canvas = document.createElement('canvas'), context = canvas.getContext('2d', {alpha:false});
-      if (!context) throw new Error('无法准备兼容编码画面');
-      const draw = () => {
-        const width = media.videoWidth, height = media.videoHeight;
-        const scale = Math.min(1, 1920 / Math.max(width, height), 1080 / Math.min(width, height));
-        const targetWidth = Math.max(2, Math.floor(width * scale / 2) * 2);
-        const targetHeight = Math.max(2, Math.floor(height * scale / 2) * 2);
-        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-          canvas.width = targetWidth; canvas.height = targetHeight;
-        }
-        // Fill the exact output dimensions: no letterbox, including on resize.
-        context.drawImage(media, 0, 0, canvas.width, canvas.height);
-      };
-      const nextFrame = () => { draw(); frameCallback = media.requestVideoFrameCallback(nextFrame); };
-      draw(); captured = canvas.captureStream(30);
-      frameCallback = media.requestVideoFrameCallback(nextFrame);
-    } else captured = media.captureStream();
-    await media.play();
-    if (!captured.getVideoTracks().length) throw new Error('未获得视频轨道');
-    stream = new MediaStream([...captured.getVideoTracks(), ...destination.stream.getAudioTracks()]);
-    try { recorder = new MediaRecorder(stream, {mimeType:mime, videoBitsPerSecond:3500000, audioBitsPerSecond:192000}); }
-    catch (error) { throw videoEncodingError(error); }
-    const done = new Promise((resolve, reject) => {
-      recorder.ondataavailable = event => { if (event.data?.size) chunks.push(event.data); };
-      recorder.onerror = event => reject(videoEncodingError(event.error));
-      recorder.onstop = resolve;
-      const stop = () => { if (recorder.state !== 'inactive') recorder.stop(); media.pause(); };
-      let lastTime = media.currentTime, lastAdvance = Date.now();
-      timer = setInterval(() => {
-        setProgress((media.currentTime - start) / (end - start) * 99, compatible ? '正在兼容导出 · 最高 1080p' : '正在导出视频');
-        if (media.currentTime >= end - .025 || media.ended) return stop();
-        if (media.currentTime !== lastTime) { lastTime = media.currentTime; lastAdvance = Date.now(); }
-        if (media.error || Date.now() - lastAdvance > 20000) { reject(new Error('视频读取中断，请重试')); stop(); }
-      }, 40);
-      try { recorder.start(300); } catch (error) { reject(videoEncodingError(error)); }
-    });
-    await done;
-    if (!chunks.length) throw new Error('导出的视频为空');
-    return new Blob(chunks, {type:recorder.mimeType || mime});
-  } finally {
-    if (frameCallback !== undefined) media.cancelVideoFrameCallback(frameCallback);
-    clearInterval(timer); if (recorder && recorder.state !== 'inactive') recorder.stop();
-    media.pause(); stream?.getTracks().forEach(track => track.stop()); captured?.getTracks().forEach(track => track.stop());
-    await audioCtx?.close().catch(() => {}); media.removeAttribute('src'); media.load(); media.remove();
-  }
+  const file = await KeyeVideoExport.run({
+    url, sessionId: url === sourceURL ? current?.id : undefined,
+    start, end, format: mime.startsWith('video/mp4') ? 'mp4' : 'webm',
+    width: current?.videoWidth, height: current?.videoHeight, compatible,
+    onProgress: (progress, phase) => setProgress(progress * 100, phase)
+  });
+  return file;
 }
 async function cut() {
   if (exporting || !current) return;
@@ -584,7 +546,7 @@ async function cut() {
     setProgress(0, current.mode === 'audio' ? '正在解码音频' : '正在准备视频');
     status('正在处理，请保持此页面打开。');
     if (current.mode === 'audio') clipBlob = await (format === 'mp3' ? createMP3(sourceBlob, start, end) : createWAV(sourceBlob, start, end));
-    else if (format === 'webm' && sourceBlob.type.startsWith('video/webm') && start === 0 && Math.abs(end - duration) < .011) clipBlob = sourceBlob;
+    else if (format === 'webm' && canExportOriginalWebM()) clipBlob = sourceBlob;
     else clipBlob = await createVideoClip(sourceURL, start, end, format);
     clipFormat = format;
     setProgress(100, '导出完成');
@@ -645,6 +607,8 @@ function resetSelection() {
   applyBounds(0, duration); remember(before); seekPosition(0);
 }
 function init() {
+  KeyeVideoExport.cleanOldFiles();
+  window.addEventListener('keye-download-error',event=>fail(new Error(event.detail)));
   const on = (id, event, handler) => $(id).addEventListener(event, (...args) => { Promise.resolve().then(() => handler(...args)).catch(fail); });
   on('playPause', 'click', togglePlayback); on('preview', 'click', preview); on('cut', 'click', cut);
   on('jumpStart', 'click', () => seekPosition(startTime())); on('jumpEnd', 'click', () => seekPosition(endTime()));
@@ -698,6 +662,10 @@ function init() {
   document.querySelector('.studio-brand').addEventListener('click', event => { if (exporting) event.preventDefault(); });
   window.addEventListener('beforeunload', event => { if (exporting) { event.preventDefault(); event.returnValue = ''; } });
   (async () => {
+    await checkVideoExportCapabilities();
+    let recordingActive=false;
+    try {if(typeof chrome!=='undefined'&&chrome.runtime?.sendMessage){const state=await chrome.runtime.sendMessage({type:'GET_STATE'});recordingActive=state?.state?.phase&&state.state.phase!=='idle';}}catch{}
+    if(!recordingActive)await dbRecoverRecordings();
     const sessions = await loadHistory(), id = new URLSearchParams(location.search).get('id');
     const selected = id && sessions.some(session => session.id === id) ? id : sessions[0]?.id;
     if (selected) await loadSession(selected);

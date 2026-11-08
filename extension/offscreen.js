@@ -8,7 +8,10 @@ let recordingStart = 0;
 let pauseStart = 0;
 let pausedMs = 0;
 let ending = false;
-let dimensionMonitor = null;
+let captureVideo = null;
+let fixedStream = null;
+let frameTimer;
+let storageError=null,savedChunks=0,savedBytes=0;
 
 function pickMime(mode) {
   const types = mode === 'audio'
@@ -18,13 +21,11 @@ function pickMime(mode) {
 }
 function send(type, payload={}) {return chrome.runtime.sendMessage({type,...payload});}
 function cleanUp() {
-  if (dimensionMonitor) {
-    dimensionMonitor.onresize=null;
-    dimensionMonitor.onloadedmetadata=null;
-    dimensionMonitor.pause();
-    dimensionMonitor.srcObject=null;
-    dimensionMonitor=null;
+  if (captureVideo) {
+    captureVideo.pause();captureVideo.srcObject=null;captureVideo=null;
   }
+  clearInterval(frameTimer);frameTimer=undefined;
+  fixedStream?.getTracks().forEach(t=>t.stop());fixedStream=null;
   sourceStream?.getTracks().forEach(t=>t.stop());
   sourceStream=null;
   playbackContext?.close().catch(()=>{});
@@ -36,6 +37,7 @@ function cleanUp() {
   pauseStart=0;
   pausedMs=0;
   ending=false;
+  storageError=null;savedChunks=0;savedBytes=0;
 }
 async function finish() {
   if (ending) return;
@@ -45,7 +47,7 @@ async function finish() {
     await pendingWrites;
     if (id) {
       const duration=Math.max(0,Date.now()-recordingStart-pausedMs-(pauseStart ? Date.now()-pauseStart : 0));
-      await dbWrite('sessions',{...activeSession, durationMs:duration, status:'ready', completedAt:Date.now(), chunkCount:chunkIndex});
+      await dbWrite('sessions',{...activeSession, durationMs:storageError?activeSession.savedDurationMs:duration, status:'ready', completedAt:Date.now(), chunkCount:savedChunks, sizeBytes:savedBytes, incompleteReason:storageError?.message});
     }
     cleanUp();
     await send('OFFSCREEN_FINISHED',{id});
@@ -58,34 +60,47 @@ async function finish() {
 async function start(message) {
   if(mediaRecorder) throw new Error('已有录音任务');
   const {streamId,mode,tabTitle} = message;
+  const estimate=await navigator.storage.estimate();
+  if(Number.isFinite(estimate.quota)&&estimate.quota-estimate.usage<64*1024*1024)throw new Error('本地可用空间不足，请释放空间后再开始录制');
   const audio={mandatory:{chromeMediaSource:'tab',chromeMediaSourceId:streamId}};
-  // Tab capture defaults to a fixed-size frame, which letterboxes other page ratios.
-  // Explicit, flexible bounds let Chrome follow the page through resize/fullscreen.
-  // Keep every constraint in the legacy mandatory object; mixing standard keys fails.
+  // Cap capture before decoding/drawing, then fix an even-sized 1080p canvas.
+  // Keep initial constraints in the legacy mandatory object.
   const video= mode==='video' ? {mandatory:{
     chromeMediaSource:'tab',chromeMediaSourceId:streamId,
-    minWidth:2,minHeight:2,maxWidth:7680,maxHeight:4320,maxFrameRate:30
+    minWidth:2,minHeight:2,maxWidth:1920,maxHeight:1080,maxFrameRate:KeyeMediaQuality.captureFrameRate
   }} : false;
   sourceStream=await navigator.mediaDevices.getUserMedia({audio, video});
   const id=`rec-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
   activeSession={id,mode,title:tabTitle||'刻页录制',startedAt:Date.now(),status:'recording',mimeType:pickMime(mode)};
   if (mode==='video') {
-    // Record dimension changes for the exporter: avc1 cannot represent them safely.
-    dimensionMonitor=document.createElement('video');
-    dimensionMonitor.muted=true;dimensionMonitor.playsInline=true;
-    const rememberSize=()=>{
-      const width=dimensionMonitor?.videoWidth,height=dimensionMonitor?.videoHeight;
-      if (!width || !height || !activeSession) return;
-      if (!activeSession.videoWidth) {
-        activeSession.videoWidth=width;activeSession.videoHeight=height;
-      } else if (width!==activeSession.videoWidth || height!==activeSession.videoHeight) {
-        activeSession.variableResolution=true;
+    captureVideo=document.createElement('video');
+    captureVideo.muted=true;captureVideo.playsInline=true;captureVideo.srcObject=sourceStream;
+    // getSettings() can still contain placeholder dimensions before frame one.
+    await captureVideo.play();
+    // Chrome can deliver a provisional frame before applying display scaling.
+    // Let that initial setup settle before fixing the file's dimensions.
+    await new Promise(resolve=>setTimeout(resolve,150));
+    const {width,height}=KeyeMediaQuality.fitDimensions(captureVideo.videoWidth,captureVideo.videoHeight);
+    activeSession.videoWidth=width;activeSession.videoHeight=height;activeSession.videoFrameRate=KeyeMediaQuality.captureFrameRate;
+    // Browser tab tracks may still change size despite exact track constraints.
+    // This internal canvas keeps one size without modifying the captured page.
+    const canvas=document.createElement('canvas'),context=canvas.getContext('2d',{alpha:false});
+    if (!context) throw new Error('无法准备录制画面，请重试');
+    canvas.width=width;canvas.height=height;
+    const draw=()=>{
+      const sourceWidth=captureVideo.videoWidth,sourceHeight=captureVideo.videoHeight;
+      if (sourceWidth && sourceHeight) {
+        const scale=Math.min(width/sourceWidth,height/sourceHeight);
+        const drawnWidth=sourceWidth*scale,drawnHeight=sourceHeight*scale;
+        context.fillStyle='#000';context.fillRect(0,0,width,height);
+        context.drawImage(captureVideo,(width-drawnWidth)/2,(height-drawnHeight)/2,drawnWidth,drawnHeight);
       }
     };
-    dimensionMonitor.onloadedmetadata=rememberSize;
-    dimensionMonitor.onresize=rememberSize;
-    dimensionMonitor.srcObject=sourceStream;
-    await dimensionMonitor.play();rememberSize();
+    draw();
+    // Offscreen documents do not receive reliable animation/video-frame callbacks.
+    frameTimer=setInterval(draw,1000/KeyeMediaQuality.captureFrameRate);
+    fixedStream=canvas.captureStream(KeyeMediaQuality.captureFrameRate);
+    for (const track of sourceStream.getAudioTracks()) fixedStream.addTrack(track);
   }
   recordingStart=Date.now();
   pendingWrites=Promise.resolve();
@@ -93,7 +108,7 @@ async function start(message) {
   pausedMs=0;
   pauseStart=0;
   ending=false;
-  await dbWrite('sessions',activeSession);
+  storageError=null;savedChunks=0;savedBytes=0;
   // Capturing a tab stops its regular audio output. Forward to speakers.
   if(sourceStream.getAudioTracks().length) {
     playbackContext=new AudioContext();
@@ -102,11 +117,27 @@ async function start(message) {
   }
   const mime=pickMime(mode);
   if(!mime) throw new Error('当前 Chrome 不支持 WebM 录制。');
-  mediaRecorder=new MediaRecorder(sourceStream,{mimeType:mime});
+  const options={mimeType:mime};
+  if(mode==='video'){
+    options.videoBitsPerSecond=KeyeMediaQuality.recordingBitrate(activeSession.videoWidth,activeSession.videoHeight);
+    options.audioBitsPerSecond=KeyeMediaQuality.audioBitrate;
+  }
+  mediaRecorder=new MediaRecorder(fixedStream || sourceStream,options);
+  if(mode==='video'){
+    activeSession.videoBitrate=mediaRecorder.videoBitsPerSecond;
+    activeSession.audioBitrate=mediaRecorder.audioBitsPerSecond;
+  }
+  await dbWrite('sessions',activeSession);
   mediaRecorder.ondataavailable=(event)=>{
     if(event.data?.size) {
       const record={id,index:chunkIndex++,blob:event.data};
-      pendingWrites=pendingWrites.then(()=>dbWrite('chunks',record));
+      const durationMs=Math.max(0,Date.now()-recordingStart-pausedMs-(pauseStart?Date.now()-pauseStart:0));
+      pendingWrites=pendingWrites.then(async()=>{
+        if(storageError)return;
+        const checkpoint={...activeSession,chunkCount:savedChunks+1,sizeBytes:savedBytes+record.blob.size,savedDurationMs:durationMs,lastSavedAt:Date.now()};
+        try{await dbAppendChunk(checkpoint,record);savedChunks++;savedBytes+=record.blob.size;activeSession=checkpoint;}
+        catch(error){storageError=error;if(mediaRecorder?.state!=='inactive')mediaRecorder.stop();}
+      });
     }
   };
   mediaRecorder.onstop=()=>{finish();};

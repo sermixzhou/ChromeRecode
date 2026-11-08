@@ -131,14 +131,15 @@ const out=path.resolve(__dirname,'../test-results');
     await page.waitForFunction(()=>document.querySelector('#player').paused,{},{timeout:6000});
     assert(Math.abs(await page.locator('#player').evaluate(m=>m.currentTime)-4)<.2);
     assert.equal(await page.locator('#exportFormat').inputValue(),'mp4');
-    // A browser without H.264/AAC must offer WebM rather than relabeling WebM as MP4.
-    const fallback=await page.evaluate(()=>{
-      const supported=MediaRecorder.isTypeSupported;
+    // A browser without H.264 must offer WebM; WebCodecs owns export support.
+    const fallback=await page.evaluate(async()=>{
+      const supported=VideoEncoder.isConfigSupported;
       try {
-        MediaRecorder.isTypeSupported=type=>!type.startsWith('video/mp4') && supported.call(MediaRecorder,type);
+        VideoEncoder.isConfigSupported=config=>config.codec.startsWith('avc')?Promise.resolve({supported:false,config}):supported.call(VideoEncoder,config);
+        await checkVideoExportCapabilities();
         configureExportFormats();
         return {format:$('exportFormat').value,disabled:$('exportFormat').querySelector('[value=mp4]').disabled};
-      } finally {MediaRecorder.isTypeSupported=supported;configureExportFormats();}
+      } finally {VideoEncoder.isConfigSupported=supported;await checkVideoExportCapabilities();configureExportFormats();}
     });
     assert.deepEqual(fallback,{format:'webm',disabled:true});
     const videoDownload=page.waitForEvent('download');await page.locator('#cut').click();
